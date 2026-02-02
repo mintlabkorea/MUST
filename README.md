@@ -21,4 +21,3 @@ python main.py --config config/default.yaml
 
 ---
 *Developed by sheemsy @ Mint Lab*
-Further if you have any trouble, please feel free to mail sheemsy@korea.ac.kr
