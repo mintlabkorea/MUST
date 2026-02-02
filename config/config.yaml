@@ -1,0 +1,125 @@
+# config.yaml
+
+# ── Device ─────────────────────────────────────────────────────────────
+device: "cuda"  # or "cpu"
+
+# ── Data paths & split ─────────────────────────────────────────────────
+pkl_all: "/home/mintlab01/TOR/data/data/train/train.pkl"
+survey_csv: "/home/mintlab01/TOR/data/data/train/survey/pre_survey.csv"
+
+# subject IDs
+val_subjects: ["1", "12", "13", "19", "21", "29"]   # Edit base_trainer
+test_subjects: ["4", "8", "11", "24", "27", "32"]
+#val_subjects: ["1", "12", "16", "19", "21", "24"]   # Edit base_trainer
+#test_subjects: ["13", "18", "25", "29", "31", "32"]
+exclude: []
+
+# ── Dataset settings ──────────────────────────────────────────────────
+emo_mode: "phase"          # timeline / phase / motion
+window_sec_emo: 10.0
+window_stride_emo: 5.0
+
+mot_mode: "motion"
+window_sec_mot: 5.0
+window_stride_mot: 5.0
+
+unified_win_sec: 5.0
+fs: 100
+batch_size: 64
+num_workers: 4
+seq_len: 256
+
+# ── Model & training hyperparams ─────────────────────────────────────
+hidden: 128
+num_heads: 4
+
+lr: 0.0001
+
+# optimizer-specific learning rates
+lr_motion: 0.0008   
+lr_emotion: 0.0003  
+lr_fusion: 0.0001
+
+lambda_motion: 1.0
+lambda_emotion: 5.0
+
+weight_decay: 0.0001 
+epochs: 50
+patience: 10
+
+# ── Task & Model Dimensions ──────────────────────────────────────────
+num_motion: 4          # motion_weights 리스트의 길이와 일치 (phone, drink, watch, drive)
+num_valence: 3         # valence_weights 리스트의 길이와 일치
+num_arousal: 3         # arousal_weights 리스트의 길이와 일치
+
+# -- Auxiliary Task Dimensions --
+num_behavior_groups: 3 # 예: [정상, 위험, 안정] 등 행동 그룹 수
+aux_weight: 0.2        # 보조 손실(Auxiliary loss)의 가중치
+# ── Task‐loss weights & ignore indices ───────────────────────────────
+motion_weights: [1.3, 1.5, 1.9, 1.1] # phone, drink, watch, drive
+valence_weights: [1.2671, 1.1623, 1.7536]
+arousal_weights: [1.3671, 1.2623, 1.3536]
+
+ign_mot: -100
+ign_emo: -100
+
+# ──emotion weight ───────────────────────────────
+lambda_val: 1.0
+lambda_aro: 1.8
+
+# ── Fusion Experiment Params ───────────────────────────────────
+fusion_params:
+  motion_modalities: ["imu", "veh", "sc"]  # MotionPredictor에 사용할 모달리티
+  emotion_modalities: ["imu", "ppg", "veh", "sc", "survey"] # EmotionPredictor에 사용할 모달리티
+  
+  # 학습시킬 모듈 목록 (True/False로 쉽게 제어)
+  train_sm_fuse: True
+  train_gm_fuse: True
+  train_motion_predictor: True
+  train_emotion_predictor: True
+# ── Encoder params ────────────────────────────────────────────────────
+imu_params:
+  input_dim: 14
+  encoder_dim: 32
+  num_layers: 2
+  num_heads: 2
+  ff_expansion: 4
+  conv_expansion: 2
+  input_dropout: 0.2
+  ff_dropout: 0.2
+  attn_dropout: 0.2
+  conv_dropout: 0.2
+  conv_kernel: 7
+  half_step_residual: true
+
+veh_params:
+  embed_dim: 64
+  num_channels: 64
+  num_layers: 4
+  kernel_size: 3
+  dropout: 0.1
+
+ppg_params:
+  embed_dim: 64
+  cnn_channels: [16, 32, 64]
+  lstm_hidden: 128
+  lstm_layers: 2
+  attn1_dim: 128
+  rr_dim: 32
+  float_dim: 16
+  dropout: 0.1
+
+sc_params:
+  max_scenario_id: 50
+  max_scenario_type: 5
+  max_phase_id: 3
+  vocab_size: 52
+  embed_dim: 16
+  dropout: 0.1
+
+survey_params:
+  input_dim: 12
+  hidden_dims: [32, 16]
+  embed_dim: 12
+  dropout: 0.1
+

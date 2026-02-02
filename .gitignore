@@ -1,3 +1,22 @@
-*.pth
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*.class
+
+# OS files
+.DS_Store
 .ipynb_checkpoints/
+
+# Data and Models
+*.pth
+*.zip
+*.tar.gz
+*.csv
+# Ignore all pickles except the dummy one
+*.pkl
+!data/train.pkl
+
+# Environments
+.venv/
+env/
+venv/
