@@ -24,4 +24,3 @@ python main.py --config config/default.yaml
 
 ---
 *Developed by sheemsy @ Mint Lab*
-EOF
