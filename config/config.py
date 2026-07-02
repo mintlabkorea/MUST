@@ -1,8 +1,15 @@
 import os
+from pathlib import Path
 import torch
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict
 import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def project_path(*parts: str) -> str:
+    return str(PROJECT_ROOT.joinpath(*parts))
 
 
 @dataclass
@@ -10,10 +17,13 @@ class ProjectConfig:
     """프로젝트 전반에 걸친 기본 설정 (경로, 시드 등)"""
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed: int = 42
-    save_dir: str = "/home/mintlab01/main_7/results"
+    profile: str = "auto"
+    root_dir: str = field(default_factory=lambda: project_path())
+    weights_dir: str = field(default_factory=lambda: project_path("weights"))
+    results_dir: str = field(default_factory=lambda: project_path("results"))
     # 데이터 경로
-    pkl_all: str = os.path.expanduser("/home/mintlab01/main_5/data/data/train/train_ver2.pkl")
-    survey_csv: str = "/home/mintlab01/Downloads/combined_static_data_2.csv"
+    pkl_all: str = field(default_factory=lambda: project_path("data", "data", "train", "train_ver2.pkl"))
+    survey_csv: str = field(default_factory=lambda: project_path("data", "sample", "sample_survey.csv"))
 
 
 @dataclass
@@ -53,16 +63,16 @@ class PretrainEmotionConfig(PretrainTaskConfig):
     num_valence: int = 9
     num_arousal: int = 9
     
-    valence_weights: List[float] = field(default_factory=lambda: [0.95, 1.15, 0.62, 1.09, 0.51, 1.1, 0.96, 2.11, 6.56])
+    valence_weights: List[float] = field(default_factory=lambda: [1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,])
     # [0.95, 1.15, 0.62, 1.09, 0.51, 1.1, 0.96, 2.11, 6.56], [2.11, 1.58, 0.9, 1.06, 0.62, 0.8, 0.72, 1.1, 1.51]
-    arousal_weights: List[float] = field(default_factory=lambda: [2.11, 1.58, 0.9, 1.06, 0.62, 0.8, 0.72, 1.1, 1.51])
+    arousal_weights: List[float] = field(default_factory=lambda: [1.0, 1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,])
     # valence_weights: List[float] = field(default_factory=lambda: [1.6, 1.1]) # 1.4, 1.1
     # arousal_weights: List[float] = field(default_factory=lambda: [1.6, 1.0]) # 1.45, 1.0
     lambda_valence: float = 0.5 # 확정
     lambda_arousal: float = 0.7 # 확정
     ignore_index: int = -100
     modalities_to_use: List[str] = field(default_factory=lambda: ['ppg', 'sc', 'survey'])
-    ckpt_path: str = '/home/mintlab01/main_5/weights/best_emotion_ppg_sc_survey.pt'
+    ckpt_path: str = field(default_factory=lambda: project_path("weights", "best_emotion_ppg_sc_survey.pt"))
     
 
 @dataclass
@@ -74,7 +84,7 @@ class PretrainMotionConfig(PretrainTaskConfig):
     class_weights: List[float] = field(default_factory=lambda: [1.0, 1.1, 1.5]) # 1.0, 1.0, 2.0 (확정)
     modalities_to_use: List[str] = field(default_factory=lambda: ['imu', 'veh'])
     ignore_index: int = -1
-    ckpt_path: str = '/home/mintlab01/main_5/weights/best_motion_imu_veh.pt'
+    ckpt_path: str = field(default_factory=lambda: project_path("weights", "best_motion_imu_veh.pt"))
 
 
 @dataclass
@@ -91,9 +101,9 @@ class MainTaskConfig:
     use_uncertainty_loss: bool = True # 불확실성 기반 손실 함수 사용 여부
     
     # Cross-modal Loss 관련 설정
-    cross_modal_lambda: float = 0.1   # 상호 정렬 손실의 가중치
+    cross_modal_lambda: float = 0.2   # 상호 정렬 손실의 가중치
 
-    lambda_emotion: float = 1.5
+    lambda_emotion: float = 2.5
     lambda_tot: float = 1.0
     lambda_act: float = 1.0
 
@@ -109,9 +119,9 @@ class FusionModelConfig:
     hidden_dim: int = 128
     static_dim: int = 8  
     max_seq_len: int = 100 # 모델이 처리할 최대 시퀀스 길이
-    dropout: float = 0.25
+    dropout: float = 0.3
     
-    num_heads: int = 8
+    num_heads: int = 2
     n_task_tokens: int = 2
     emo_delay_steps: int = 50      # Δ
     emo_ctx_window: int = 200      # 과거 윈도우 길이
@@ -157,54 +167,13 @@ class BaselineTaskConfig:
 
 @dataclass
 class EnhancerTaskConfig:
-    lr: float = 1.0e-4
-    weight_decay: float = 1.0e-5
-    epochs: int = 100
-    lambda_align: float = 1.0         # cross-modal alignment 가중치 쓰면 여기에
-    freeze_backbones: bool = True    # "freeze baselines" 단계면 true
-
-@dataclass
-class TOTConfig:
-    num_classes: int = 3
-    ignore_index: int = -100
-
-    # 평가/풀링
-    eval_pooling: str = "last"   # ["mean","last","max"]
-
-    # 손실/가중치
-    loss_type: str = "focal"     # ["focal","ce"]
-    focal_gamma: float = 2.0
-
-    class_weighting: str = "auto"  # ["auto","balanced","none","manual"]
-    manual_class_weights: Optional[List[float]] = None  # class_weighting=="manual"일 때만 사용
-
-    acc_loss_lambda: float = 0.0
-
-    feat_dim: int = 32
-    use_modalities: List[str] = field(default_factory=lambda: ["veh", "imu", "sc", "ppg", "survey"])
-    attn_pool: bool = True
-    enh_ctx_source: str = "prob" # embed or prob
-    use_focal: bool = True
-    gru_layers: int = 2     # 1일 때 dropout=0.0 자동 처리
-    hidden: Optional[int] = None  # None이면 자동, 숫자 주면 강제
-
-    # === Enhancer 안정화 옵션 (신규) ===
-    enh_use_residual: bool = True          # y = base + gate * delta
-    enh_gate_init: float = 0.10            # gate 초기값 (작게 시작)
-    enh_use_kd: bool = True                # baseline 로짓으로 distillation
-    enh_kd_lambda: float = 0.10            # distillation 가중치
-    enh_kd_temp: float = 2.0               # KL temperature
-    enh_norm_each: bool = True             # source별 LayerNorm
-    enh_use_prob: bool = True              # logits→prob 변환해서 concat
-    enh_time_pool: str = "mean"            # (B,T,C) 컨텍스트 풀링: ["mean","max","last"]
-    enh_clip_grad: float = 1.0             # grad clip (0이면 비활성)
-
-@dataclass
-class ACTConfig:
-    use_modalities: List[str] = field(default_factory=lambda: ["veh", "ppg"])
-    feat_dim: int = 64     
-    gru_layers: int = 1     # 1일 때 dropout=0.0 자동 처리
-    hidden: Optional[int] = None  # None이면 자동, 숫자 주면 강제
+    """TOT/ACT 베이스라인 모델 학습 설정"""
+    epochs: int = 50
+    patience: int = 5
+    lr: float = 0.0001  # 조금 더 높은 학습률로 시작
+    weight_decay: float = 1e-5
+    # 베이스라인 모델은 VEH, SC 데이터만 사용
+    patience: float = 8
 
 @dataclass
 class Config:
@@ -229,5 +198,54 @@ class Config:
 
     BaselineTask: BaselineTaskConfig = field(default_factory=BaselineTaskConfig)
     EnhancerTask: EnhancerTaskConfig = field(default_factory=EnhancerTaskConfig)
-    TOT: TOTConfig = field(default_factory=TOTConfig)
-    ACT: ACTConfig = field(default_factory=ACTConfig)
+
+    def __post_init__(self):
+        self.apply_profile(os.environ.get("MUST_PROFILE", self.Project.profile))
+
+    def apply_profile(self, profile: str = "auto"):
+        """Resolve runtime paths relative to the repository root.
+
+        ``auto`` keeps the local full dataset when it exists, otherwise falls
+        back to the synthetic sample data committed with the repository.
+        """
+        full_pkl = project_path("data", "data", "train", "train_ver2.pkl")
+        sample_pkl = project_path("data", "sample", "sample_train.pkl")
+        sample_survey = project_path("data", "sample", "sample_survey.csv")
+
+        if profile == "auto":
+            profile = "full" if Path(full_pkl).exists() else "sample"
+
+        self.Project.profile = profile
+        self.Project.root_dir = project_path()
+        self.Project.weights_dir = project_path("weights")
+        self.Project.results_dir = project_path("results")
+
+        if profile == "sample":
+            self.Project.pkl_all = sample_pkl
+            self.Project.survey_csv = sample_survey
+            self.Data.test_subjects = ["7", "8"]
+            self.Data.val_subjects = ["5", "6"]
+            self.Data.batch_size = 2
+            self.Data.num_workers = 0
+            self.Data.window_sec_emo = 1.0
+            self.Data.window_stride_emo = 1.0
+            self.Data.window_sec_mot = 1.0
+            self.Data.window_stride_mot = 1.0
+        elif profile == "full":
+            self.Project.pkl_all = full_pkl
+            if not Path(self.Project.survey_csv).exists():
+                self.Project.survey_csv = sample_survey
+        else:
+            raise ValueError(f"Unknown MUST profile: {profile}")
+
+        self.Project.pkl_all = os.environ.get("MUST_PKL_ALL", self.Project.pkl_all)
+        self.Project.survey_csv = os.environ.get("MUST_SURVEY_CSV", self.Project.survey_csv)
+        self.PretrainEmotion.ckpt_path = os.environ.get(
+            "MUST_EMOTION_CKPT",
+            project_path("weights", "best_emotion_ppg_sc_survey.pt"),
+        )
+        self.PretrainMotion.ckpt_path = os.environ.get(
+            "MUST_MOTION_CKPT",
+            project_path("weights", "best_motion_imu_veh.pt"),
+        )
+        return self

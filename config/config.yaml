@@ -4,8 +4,8 @@
 device: "cuda"  # or "cpu"
 
 # ── Data paths & split ─────────────────────────────────────────────────
-pkl_all: "/home/mintlab01/TOR/data/data/train/train.pkl"
-survey_csv: "/home/mintlab01/TOR/data/data/train/survey/pre_survey.csv"
+pkl_all: "data/sample/sample_train.pkl"
+survey_csv: "data/sample/sample_survey.csv"
 
 # subject IDs
 val_subjects: ["1", "12", "13", "19", "21", "29"]   # Edit base_trainer
@@ -122,4 +122,3 @@ survey_params:
   hidden_dims: [32, 16]
   embed_dim: 12
   dropout: 0.1
-
