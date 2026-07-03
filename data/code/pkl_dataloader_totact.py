@@ -140,7 +140,7 @@ class PKLMultiModalDatasetBaseline(Dataset):
             # [수정] 연속 값을 이산적인 클래스로 변환 (Binning)
             if 0 < continuous_tot_value <= 0.93:
                 label = 0  # 긴급 (Urgent)
-            elif 2.5 < continuous_tot_value <= 1.93:
+            elif 0.93 < continuous_tot_value <= 1.93:
                 label = 1  # 주의 (Caution)
             elif continuous_tot_value > 1.93:
                 label = 2  # 안전 (Safe)

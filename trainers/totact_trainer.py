@@ -27,6 +27,22 @@ class BaselineTrainer:
         else: # ACT
             self.criterion = nn.MSELoss(reduction='none')
 
+    def _tot_logits(self, pred):
+        if isinstance(pred, dict):
+            return pred.get('logits')
+        return pred
+
+    def _act_preds(self, pred):
+        if isinstance(pred, dict):
+            pred = pred.get('act_preds', pred.get('preds'))
+        if pred is None:
+            raise KeyError("ACT model output must contain 'act_preds' or be a tensor.")
+        if pred.dim() == 3 and pred.size(-1) > 1:
+            return pred[:, :, 1]
+        if pred.dim() == 3 and pred.size(-1) == 1:
+            return pred.squeeze(-1)
+        return pred
+
     # def _calculate_loss(self, pred, true_batch):
     #     if self.task_name == 'tot':
     #         # 베이스라인 batch의 라벨 키는 'label' 입니다.
@@ -52,10 +68,10 @@ class BaselineTrainer:
         if self.task_name == 'tot':
             # 베이스라인 batch의 라벨 키는 'label' 입니다.
             true_labels = true_batch['label'] 
-            return self.criterion(pred, true_labels)
+            logits = self._tot_logits(pred)
+            return self.criterion(logits, true_labels)
         else: # ACT
-            # [변경] 모델의 3개 예측값 중 두 번째 채널(min_ACT)을 사용합니다.
-            pred_min_act = pred[:, :, 1]  # Shape: (B, T, 3) -> (B, T)
+            pred_min_act = self._act_preds(pred)
 
             true_veh1_act = true_batch['label'].squeeze(-1)
             mask = true_veh1_act != -100.0
@@ -131,7 +147,7 @@ class BaselineTrainer:
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(self.device)
             
-            logits = self.model(batch)
+            logits = self._tot_logits(self.model(batch))
             preds = torch.argmax(logits, dim=1)
             
             mask = batch['label'] != -100
@@ -155,9 +171,20 @@ class EnhancerTrainer:
         self.device = cfg.Project.device
         self.model.to(self.device)
         
-        # [핵심] 오직 '결정권자(fusion_head)'의 파라미터만 학습합니다.
+        trainable_module = getattr(self.model, 'fusion_head', None)
+        if trainable_module is None:
+            trainable_module = getattr(self.model, 'stack_head', None)
+        if trainable_module is None:
+            trainable_module = getattr(self.model, 'delta_head', None)
+        if trainable_module is None:
+            trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        else:
+            trainable_params = list(trainable_module.parameters())
+        if not trainable_params:
+            raise ValueError("No trainable enhancer parameters found.")
+
         self.optimizer = torch.optim.Adam(
-            self.model.fusion_head.parameters(), # fusion_head만 등록!
+            trainable_params,
             lr=cfg.EnhancerTask.lr, 
             weight_decay=cfg.EnhancerTask.weight_decay
         )
@@ -166,6 +193,22 @@ class EnhancerTrainer:
             self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
         else: # ACT
             self.criterion = nn.MSELoss(reduction='none')
+
+    def _tot_logits(self, pred):
+        if isinstance(pred, dict):
+            return pred.get('logits')
+        return pred
+
+    def _act_preds(self, pred):
+        if isinstance(pred, dict):
+            pred = pred.get('act_preds', pred.get('preds'))
+        if pred is None:
+            raise KeyError("ACT enhancer output must contain 'act_preds' or be a tensor.")
+        if pred.dim() == 3 and pred.size(-1) > 1:
+            return pred[:, :, 1]
+        if pred.dim() == 3 and pred.size(-1) == 1:
+            return pred.squeeze(-1)
+        return pred
 
     # def _calculate_loss(self, pred, true_batch):
     #     if self.task_name == 'tot':
@@ -199,7 +242,8 @@ class EnhancerTrainer:
         if self.task_name == 'tot':
             # 베이스라인 batch의 라벨 키는 'label' 입니다.
             true_labels = true_batch['label'] 
-            return self.criterion(pred, true_labels)
+            logits = self._tot_logits(pred)
+            return self.criterion(logits, true_labels)
         else: # ACT
             true_veh1_act = true_batch['label'].squeeze(-1)
             mask = true_veh1_act != -100.0
@@ -207,17 +251,14 @@ class EnhancerTrainer:
                 return torch.tensor(0.0, device=self.device, requires_grad=True)
 
             valid_trues = true_veh1_act[mask]
-            valid_preds_all_channels = pred[mask]
-
-            # [변경] 필요한 두 번째 채널(min_ACT)의 예측값만 선택합니다.
-            valid_preds = valid_preds_all_channels[:, 1]
+            pred_min_act = self._act_preds(pred)
+            valid_preds = pred_min_act[mask]
 
             loss = self.criterion(valid_preds, valid_trues)
             return loss.mean()
                 
     def _run_epoch(self, loader, is_train):
-        # Enhancer 모델은 전문가들이 동결되어 있으므로, train()/eval() 모드 전환은 fusion_head에만 적용
-        self.model.fusion_head.train(is_train)
+        self.model.train(is_train)
         total_loss = 0.0
         
         pbar = tqdm(loader, desc=f"[{'Train' if is_train else 'Valid'}] Enhancer-{self.task_name.upper()}")

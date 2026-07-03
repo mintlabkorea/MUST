@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import torch
 from dataclasses import dataclass, field
-from typing import List, Dict
+from typing import List, Dict, Optional
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -175,6 +175,38 @@ class EnhancerTaskConfig:
     # 베이스라인 모델은 VEH, SC 데이터만 사용
     patience: float = 8
 
+
+@dataclass
+class TOTConfig:
+    """TOT classifier settings used by models.totact_models.TOT_Baseline."""
+    num_classes: int = 3
+    ignore_index: int = -100
+    use_modalities: List[str] = field(default_factory=lambda: ["veh", "sc"])
+    feat_dim: int = 32
+    attn_pool: bool = True
+    gru_layers: int = 1
+    hidden: Optional[int] = None
+
+    # Enhancer options. The model has defaults, but keeping them explicit avoids
+    # cfg.TOT attribute errors when running older/newer model variants.
+    enh_hid: int = 128
+    enh_use_residual: bool = True
+    enh_use_prob: bool = True
+    enh_norm_each: bool = True
+    enh_gate_init: float = 0.10
+    enh_time_pool: str = "mean"
+    enh_fuse_mode: str = "logit_add"
+    enh_ctx_source: str = "prob"
+
+
+@dataclass
+class ACTConfig:
+    """ACT regressor settings used by models.totact_models.ACT_Baseline."""
+    use_modalities: List[str] = field(default_factory=lambda: ["veh", "sc"])
+    feat_dim: int = 64
+    gru_layers: int = 1
+    hidden: Optional[int] = None
+
 @dataclass
 class Config:
     """
@@ -198,6 +230,8 @@ class Config:
 
     BaselineTask: BaselineTaskConfig = field(default_factory=BaselineTaskConfig)
     EnhancerTask: EnhancerTaskConfig = field(default_factory=EnhancerTaskConfig)
+    TOT: TOTConfig = field(default_factory=TOTConfig)
+    ACT: ACTConfig = field(default_factory=ACTConfig)
 
     def __post_init__(self):
         self.apply_profile(os.environ.get("MUST_PROFILE", self.Project.profile))
