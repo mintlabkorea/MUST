@@ -516,6 +516,12 @@ class EnhancedTOTModel(nn.Module):
         if sc_time is not None:        fb['sc_motion_time']  = sc_time.float()
 
         # 2) veh/imu/ppg/survey 매핑
+        T_ref = batch['veh'].shape[1] if 'veh' in batch and batch['veh'].dim() == 3 else 1
+        if 'imu' in batch:
+            fb['imu_emotion'] = batch['imu']
+        else:
+            imu_dim = int(self.cfg.Encoders.imu.get('input_dim', 14))
+            fb['imu_emotion'] = torch.zeros(B, T_ref, imu_dim, device=device)
         if 'veh' in batch:
             fb['veh_motion']  = batch['veh']            # 모션 경로
             fb['veh_emotion'] = batch['veh']            # 감정 경로에도 동일 소스 사용
@@ -558,7 +564,7 @@ class EnhancedTOTModel(nn.Module):
 
         # 5) 호출 (안전장치 포함)
         try:
-            fout = self.fusion(fb)
+            fout = self.fusion(fb, task_type='emotion')
         except Exception as e:
             print("[DBG][fusion call failed in enhancer]:", repr(e))
             # 원래 목록 복원하고 안전하게 리턴
@@ -637,9 +643,15 @@ class EnhancedACTModel(nn.Module):
         for p in self.fusion.parameters():   p.requires_grad = False
 
         # --- 잔차 헤드 ---
-        # 입력: [baseline_feat(H_b), mot_ctx(D), emo_ctx(D)]  → 작은 GRU/MLP
-        # baseline의 히든 차원 추정(프린트 로그를 그대로 따름)
-        self.Hb = getattr(cfg.ACT, "hidden", 128) or 128
+        # 입력: [baseline_feat(H_b), mot_ctx(D), emo_ctx(D)].
+        # Match ACT_Baseline's hidden-size logic exactly. cfg.ACT.hidden can be
+        # None, in which case ACT_Baseline derives it from enabled modalities.
+        if getattr(cfg.ACT, "hidden", None) is None:
+            n_modalities = len(getattr(cfg.ACT, "use_modalities", ["veh", "sc"]))
+            in_fused = int(getattr(cfg.ACT, "feat_dim", 64)) * n_modalities
+            self.Hb = _auto_hidden(in_fused, task="act")
+        else:
+            self.Hb = int(cfg.ACT.hidden)
         in_dim = self.Hb + 2*self.ctx_dim
 
         # 아주 작게: 1층 GRU 없이 MLP로도 충분 (시퀀스 처리 위해 시점별 선형)
@@ -662,9 +674,50 @@ class EnhancedACTModel(nn.Module):
             z = torch.zeros(B, T, D, device=dev)
             return z, z
         try:
-            out = self.fusion(batch)
-            mot = (out.get("fused_motion") or out.get("motion_ctx") or out.get("motion"))
-            emo = (out.get("fused_emotion") or out.get("emotion_ctx") or out.get("emotion"))
+            fb = {}
+
+            sc_evt   = batch.get('sc_evt',   None)
+            sc_type  = batch.get('sc_type',  None)
+            sc_phase = batch.get('sc_phase', None)
+            sc_time  = batch.get('sc_time',  None)
+            if sc_evt is not None:   fb['scenario_evt_e'] = sc_evt.to(torch.long)
+            if sc_type is not None:  fb['scenario_type_e'] = sc_type.to(torch.long)
+            if sc_phase is not None: fb['phase_evt_e'] = sc_phase.to(torch.long)
+            if sc_time is not None:  fb['scenario_time_e'] = sc_time.float()
+            if sc_evt is not None:   fb['sc_motion_evt'] = sc_evt.to(torch.long)
+            if sc_type is not None:  fb['sc_motion_type'] = sc_type.to(torch.long)
+            if sc_phase is not None: fb['sc_motion_phase'] = sc_phase.to(torch.long)
+            if sc_time is not None:  fb['sc_motion_time'] = sc_time.float()
+
+            if 'veh' in batch:
+                fb['veh_motion'] = batch['veh']
+                fb['veh_emotion'] = batch['veh']
+            if 'imu' in batch:
+                fb['imu_motion'] = batch['imu']
+                fb['imu_emotion'] = batch['imu']
+            else:
+                imu_dim = int(self.cfg.Encoders.imu.get('input_dim', 14))
+                fb['imu_emotion'] = torch.zeros(B, T, imu_dim, device=dev)
+            if 'ppg' in batch:
+                fb['ppg_emotion'] = batch['ppg']
+                fb['ppg_rr_emotion'] = batch.get('ppg_rr_emotion', torch.zeros(B, 0, device=dev))
+                fb['ppg_rmssd_emotion'] = batch.get('ppg_rmssd_emotion', torch.zeros(B, device=dev))
+                fb['ppg_sdnn_emotion'] = batch.get('ppg_sdnn_emotion', torch.zeros(B, device=dev))
+            if 'survey_e' in batch:
+                fb['survey_e'] = batch['survey_e']
+            fb['label_motion'] = torch.ones(B, 1, dtype=torch.long, device=dev)
+
+            out = self.fusion(fb, task_type='emotion')
+
+            def _pick(d, *keys):
+                for key in keys:
+                    value = d.get(key)
+                    if value is not None:
+                        return value
+                return None
+
+            mot = _pick(out, "fused_motion", "motion_ctx", "motion")
+            emo = _pick(out, "fused_emotion", "emotion_ctx", "emotion")
             if mot is not None and mot.dim()==3: mot = mot.mean(1)
             if emo is not None and emo.dim()==3: emo = emo.mean(1)
             if mot is None: mot = torch.zeros(B, D, device=dev)
@@ -683,8 +736,12 @@ class EnhancedACTModel(nn.Module):
         # 1) 베이스라인 예측/피처 (동결)
         with torch.no_grad():
             b_out = self.baseline(batch)                  # {"act_preds": (B,T,1), "feat": (B,T,Hb)}
-            y_base = b_out["act_preds"] if isinstance(b_out, dict) else b_out
-            h_base = b_out.get("feat", None)
+            if isinstance(b_out, dict):
+                y_base = b_out["act_preds"]
+                h_base = b_out.get("feat", None)
+            else:
+                y_base = b_out
+                h_base = None
             if h_base is None:
                 # 백업: veh/sc 재인코딩 (비상용)
                 veh_feat_tcn = self.baseline.veh_encoder(batch["veh"].permute(0,2,1))
@@ -701,6 +758,11 @@ class EnhancedACTModel(nn.Module):
                 h_base = self._proj_backup(fused)
 
         B, T = y_base.shape[0], y_base.shape[1]
+        if h_base.size(-1) != self.Hb:
+            raise RuntimeError(
+                f"ACT enhancer feature dim mismatch: baseline feat={h_base.size(-1)} "
+                f"but enhancer expected {self.Hb}. Check cfg.ACT.use_modalities/feat_dim/hidden."
+            )
 
         # 2) 모션/감정 임베딩 → (B,T,D)
         mot_ctx, emo_ctx = self._get_ctx_embed_seq(batch, T, B)
