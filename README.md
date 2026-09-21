@@ -10,8 +10,7 @@ loader schema.
 ## Shared source snapshot (2026-09-20)
 
 The executable source matches the shared `MUST_source_20260920.zip` package.
-See [delivery notes (Korean)](DELIVERY_NOTES_KO.md) and
-[the TOT/ACT change record](CHANGELOG_20260825_tot.md).
+See [delivery notes (Korean)](DELIVERY_NOTES_KO.md).
 
 Known limitations of this snapshot:
 
