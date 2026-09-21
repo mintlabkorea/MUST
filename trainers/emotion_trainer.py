@@ -26,7 +26,6 @@ class EmotionTrainer(TrainerBase, dataProcessor):
         self._build_model()
         self._move_model_to_device()
         self._create_optimizer()
-        self.device = getattr(self.cfg.Project, "device", "cpu")
 
         os.makedirs('weights', exist_ok=True)
         os.makedirs('results/pretrain', exist_ok=True)
@@ -44,39 +43,7 @@ class EmotionTrainer(TrainerBase, dataProcessor):
         # -100과 같은 무시 인덱스를 제외하고 실제 레이블(1~9)의 개수만 집계
         print("Valence Distribution:\n", valence_counts[(valence_counts >= 1) & (valence_counts < 10)].value_counts().sort_index())
         print("\nArousal Distribution:\n", arousal_counts[(arousal_counts >= 1) & (arousal_counts < 10)].value_counts().sort_index())
-    
-    # ---------------------------
-    # 체크포인트 로더 추가
-    # ---------------------------
-    def load(self, state):
-        """
-        (A) {'encoder': sd, 'valence_predictor': sd, 'arousal_predictor': sd}
-        (B) {'encoder.xxx': t, 'valence_predictor.xxx': t, 'arousal_predictor.xxx': t}
-        """
-        if not isinstance(state, dict):
-            raise ValueError("Invalid checkpoint: expected dict")
-
-        # (A) 서브모듈 dict 형태
-        if "encoder" in state or "valence_predictor" in state or "arousal_predictor" in state:
-            if "encoder" in state:
-                self.encoder.load_state_dict(state["encoder"], strict=False)
-            if "valence_predictor" in state:
-                self.valence_predictor.load_state_dict(state["valence_predictor"], strict=False)
-            if "arousal_predictor" in state:
-                self.arousal_predictor.load_state_dict(state["arousal_predictor"], strict=False)
-            return
-
-        # (B) 플랫 dict 형태 → 접두사별로 분리
-        enc_sd = {k.split("encoder.", 1)[1]: v for k, v in state.items() if k.startswith("encoder.")}
-        vp_sd  = {k.split("valence_predictor.", 1)[1]: v for k, v in state.items() if k.startswith("valence_predictor.")}
-        ap_sd  = {k.split("arousal_predictor.", 1)[1]: v for k, v in state.items() if k.startswith("arousal_predictor.")}
-        if enc_sd:
-            self.encoder.load_state_dict(enc_sd, strict=False)
-        if vp_sd:
-            self.valence_predictor.load_state_dict(vp_sd, strict=False)
-        if ap_sd:
-            self.arousal_predictor.load_state_dict(ap_sd, strict=False)
-
+                
     def _build_model(self):
         """인코더와 2개의 예측기(Predictor)를 생성하고 손실 함수를 정의합니다."""
         self.encoder = EmotionEncoder(self.cfg)
@@ -147,28 +114,24 @@ class EmotionTrainer(TrainerBase, dataProcessor):
         
         total_v_loss, total_a_loss, v_frames, a_frames = 0.0, 0.0, 0, 0
         iterator = tqdm(loader, desc=f"Emotion (Train)" if train else "Emotion (Val)")
+        #iterator = loader
 
         for batch in iterator:
-            # --- [핵심 수정] ---
-            # 1. 라벨 시퀀스(B, T)에서 중앙값(B,)만 추출합니다. .reshape(-1)를 제거합니다.
-            raw_v_seq = batch['valence_reg_emotion']
-            end_v = raw_v_seq[:, -1] 
+            # 원본 값 (1~9)을 클래스 인덱스 (0~8)로 변환
+            raw_v = batch['valence_reg_emotion'].reshape(-1)
+            # 1~9 범위를 벗어나는 값은 무시하도록 마스크 생성
+            mask_v = (raw_v >= 1) & (raw_v < 10)
+            # 유효한 값들만 인덱스로 변환, 나머지는 ignore_index로 채움
+            tgt_v = torch.full_like(raw_v, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
+            tgt_v[mask_v] = raw_v[mask_v].long() - 1
 
-            raw_a_seq = batch['arousal_reg_emotion']
-            end_a = raw_a_seq[:, -1]
+            raw_a = batch['arousal_reg_emotion'].reshape(-1)
+            mask_a = (raw_a >= 1) & (raw_a < 10)
+            tgt_a = torch.full_like(raw_a, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
+            tgt_a[mask_a] = raw_a[mask_a].long() - 1
 
-            # 이제 end_v, end_a 대신 end_v, end_a를 사용하도록 아래 변수명들을 변경합니다.
-            mask_v = (end_v >= 1) & (end_v < 10)
-            tgt_v = torch.full_like(end_v, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
-            tgt_v[mask_v] = end_v[mask_v].long() - 1
-
-            mask_a = (end_a >= 1) & (end_a < 10)
-            tgt_a = torch.full_like(end_a, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
-            tgt_a[mask_a] = end_a[mask_a].long() - 1
-            
             tgt_v = tgt_v.to(self.cfg.Project.device)
             tgt_a = tgt_a.to(self.cfg.Project.device)
-            
             # 마스크는 ignore_index가 아닌 샘플만 사용하도록 재정의
             mask_v = (tgt_v != self.cfg.PretrainEmotion.ignore_index)
             mask_a = (tgt_a != self.cfg.PretrainEmotion.ignore_index)
@@ -176,9 +139,9 @@ class EmotionTrainer(TrainerBase, dataProcessor):
             with torch.set_grad_enabled(train):
                 out = self.forward(batch)
                 
-                # 3. 모델 출력(B, 9)과 타겟(B,)의 차원이 일치하므로 손실 계산이 가능합니다.
-                #    마스크(B,)를 사용해 유효한 샘플에 대해서만 손실을 계산합니다.
+                # Valence 손실
                 l_v = self.v_loss_fn(out['valence_logits'][mask_v], tgt_v[mask_v]) if mask_v.any() else torch.tensor(0., device=self.cfg.Project.device)
+                # Arousal 손실
                 l_a = self.a_loss_fn(out['arousal_logits'][mask_a], tgt_a[mask_a]) if mask_a.any() else torch.tensor(0., device=self.cfg.Project.device)
                 
                 loss = self.cfg.PretrainEmotion.lambda_valence * l_v + self.cfg.PretrainEmotion.lambda_arousal * l_a
@@ -213,7 +176,7 @@ class EmotionTrainer(TrainerBase, dataProcessor):
 
     @torch.no_grad()
     def get_predictions(self, loader):
-        """[수정] 예측값(창문당 1개)과 실제값(창문당 1개)을 1:1로 비교합니다."""
+        """[수정] 예측값, 실제값과 함께 각 샘플의 시점 ID도 수집합니다."""
         self.encoder.eval()
         self.valence_predictor.eval()
         self.arousal_predictor.eval()
@@ -223,34 +186,34 @@ class EmotionTrainer(TrainerBase, dataProcessor):
 
         for batch in loader:
             out = self.forward(batch)
-            
-            # 모델 예측값은 (B, Classes) 형태이므로, argmax 후 (B,) 형태가 됩니다. (윈도우당 1개)
-            vp_multiclass = out['valence_logits'].argmax(-1).cpu()
-            ap_multiclass = out['arousal_logits'].argmax(-1).cpu()
+            vp = out['valence_logits'].argmax(-1).cpu()
+            ap = out['arousal_logits'].argmax(-1).cpu()
 
-            # --- [핵심 수정] ---
-            raw_v_seq = batch['valence_reg_emotion']
-            end_v = raw_v_seq[:, -1].cpu() 
-
-            raw_a_seq = batch['arousal_reg_emotion']
-            end_a = raw_a_seq[:, -1].cpu()
-                        
+            # collate_fn으로부터 시점 ID 텐서를 받음
             phases = batch['phase_evt_e'].cpu()
 
-            # --- 이제부터 모든 처리는 (B,) 형태의 1차원 텐서를 기준으로 수행합니다. ---
-            
             # Valence 처리
-            vt_multiclass = torch.full_like(end_v, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
-            valid_mask_v = (end_v >= 1) & (end_v < 10)
-            vt_multiclass[valid_mask_v] = end_v[valid_mask_v].long() - 1
+            raw_v = batch['valence_reg_emotion']
+            # 실제값(True)을 0-8 인덱스로 변환
+            vt_multiclass = torch.full_like(raw_v, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
+            valid_mask_v = (raw_v >= 1) & (raw_v < 10)
+            vt_multiclass[valid_mask_v] = raw_v[valid_mask_v].long() - 1
             mask_v = vt_multiclass != self.cfg.PretrainEmotion.ignore_index
+            # .squeeze()를 추가하여 [Batch, 1] 모양을 [Batch]로 변경
+            mask_v = mask_v.squeeze()
 
-            # 3진 분류로 변환
+
+            # 예측값(Prediction)은 모델 출력(0-8) 그대로 사용
+            vp_multiclass = out['valence_logits'].argmax(-1).cpu().reshape(-1)
+
+            # --- 정확도 평가를 위해 이진으로 변환 ---
+            # True values (vt_binary -> vt_ternary로 변수명 변경)
             vt_ternary = torch.full_like(vt_multiclass, -1)
-            vt_ternary[(vt_multiclass >= 0) & (vt_multiclass <= 2)] = 0
-            vt_ternary[(vt_multiclass >= 3) & (vt_multiclass <= 5)] = 1
-            vt_ternary[(vt_multiclass >= 6) & (vt_multiclass <= 8)] = 2
-            
+            vt_ternary[(vt_multiclass >= 0) & (vt_multiclass <= 2)] = 0  # Low: 1,2,3점
+            vt_ternary[(vt_multiclass >= 3) & (vt_multiclass <= 5)] = 1  # Medium: 4,5,6점
+            vt_ternary[(vt_multiclass >= 6) & (vt_multiclass <= 8)] = 2  # High: 7,8,9점
+
+            # Predicted values (vp_binary -> vp_ternary로 변수명 변경)
             vp_ternary = torch.full_like(vp_multiclass, -1)
             vp_ternary[(vp_multiclass >= 0) & (vp_multiclass <= 2)] = 0
             vp_ternary[(vp_multiclass >= 3) & (vp_multiclass <= 5)] = 1
@@ -261,22 +224,31 @@ class EmotionTrainer(TrainerBase, dataProcessor):
             val_phases.append(phases[mask_v])
 
             # Arousal 처리
-            at_multiclass = torch.full_like(end_a, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
-            valid_mask_a = (end_a >= 1) & (end_a < 10)
-            at_multiclass[valid_mask_a] = end_a[valid_mask_a].long() - 1
+            raw_a = batch['arousal_reg_emotion'].reshape(-1)
+            # 실제값(True)을 0-8 인덱스로 변환
+            at_multiclass = torch.full_like(raw_a, self.cfg.PretrainEmotion.ignore_index, dtype=torch.long)
+            valid_mask_a = (raw_a >= 1) & (raw_a < 10)
+            at_multiclass[valid_mask_a] = raw_a[valid_mask_a].long() - 1
             mask_a = at_multiclass != self.cfg.PretrainEmotion.ignore_index
+            mask_a.squeeze()
 
-            # 3진 분류로 변환
+            # 예측값(Prediction)은 모델 출력(0-8) 그대로 사용
+            ap_multiclass = out['arousal_logits'].argmax(-1).cpu().reshape(-1)
+
+
+            # --- 정확도 평가를 위해 이진으로 변환 ---
             at_ternary = torch.full_like(at_multiclass, -1)
             at_ternary[(at_multiclass >= 0) & (at_multiclass <= 2)] = 0
             at_ternary[(at_multiclass >= 3) & (at_multiclass <= 5)] = 1
             at_ternary[(at_multiclass >= 6) & (at_multiclass <= 8)] = 2
-
+            
+            # [참고] Arousal 예측값(ap_multiclass)은 Valence 예측값(vp_multiclass)을 잘못 사용하고 있을 수 있으니 확인이 필요합니다.
+            # 아래 코드는 ap_multiclass가 올바르다는 가정 하에 작성되었습니다.
             ap_ternary = torch.full_like(ap_multiclass, -1)
             ap_ternary[(ap_multiclass >= 0) & (ap_multiclass <= 2)] = 0
             ap_ternary[(ap_multiclass >= 3) & (ap_multiclass <= 5)] = 1
             ap_ternary[(ap_multiclass >= 6) & (ap_multiclass <= 8)] = 2
-            
+
             aro_trues.append(at_ternary[mask_a])
             aro_preds.append(ap_ternary[mask_a])
             aro_phases.append(phases[mask_a])
@@ -287,7 +259,6 @@ class EmotionTrainer(TrainerBase, dataProcessor):
             'val_phases': torch.cat(val_phases).numpy(),
             'aro_phases': torch.cat(aro_phases).numpy(),
         }
-
 
     
     def train(self, save_path=None):

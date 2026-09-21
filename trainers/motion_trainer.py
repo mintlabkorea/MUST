@@ -53,42 +53,6 @@ class MotionTrainer(TrainerBase, dataProcessor):
         os.makedirs('weights', exist_ok=True)
         os.makedirs('results/pretrain', exist_ok=True)
 
-    def load(self, state):
-        """
-        state가 아래 두 케이스 모두를 지원:
-        (A) {'encoder': sd, 'head': sd, 'optim': sd, 'scaler': sd}
-        (B) {'encoder.xxx': tensor, 'head.xxx': tensor, ...} 플랫 dict
-        """
-        if not isinstance(state, dict):
-            raise ValueError("Invalid checkpoint: expected dict")
-
-        def _maybe_load_opt_and_scaler(d):
-            if "optim" in d and hasattr(self, "optim"):
-                try: self.optim.load_state_dict(d["optim"])
-                except Exception: pass
-            if "scaler" in d and hasattr(self, "scaler"):
-                try: self.scaler.load_state_dict(d["scaler"])
-                except Exception: pass
-
-        # (A) 서브모듈 dict 형태
-        if "encoder" in state or "head" in state:
-            if "encoder" in state:
-                self.encoder.load_state_dict(state["encoder"], strict=False)
-            if "head" in state:
-                self.head.load_state_dict(state["head"], strict=False)
-            _maybe_load_opt_and_scaler(state)
-            return
-
-        # (B) 플랫 dict 형태 → 접두사별로 분리
-        enc_sd = {k.split("encoder.", 1)[1]: v for k, v in state.items() if k.startswith("encoder.")}
-        head_sd = {k.split("head.", 1)[1]: v for k, v in state.items() if k.startswith("head.")}
-        if enc_sd:
-            self.encoder.load_state_dict(enc_sd, strict=False)
-        if head_sd:
-            self.head.load_state_dict(head_sd, strict=False)
-        # optim/scaler는 플랫 dict에 거의 없지만 혹시 몰라 체크
-        _maybe_load_opt_and_scaler(state)
-
     # ---------- model ----------
     def _build_model(self):
         self.encoder = MotionEncoder(self.cfg)

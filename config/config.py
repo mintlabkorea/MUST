@@ -187,6 +187,23 @@ class TOTConfig:
     gru_layers: int = 1
     hidden: Optional[int] = None
 
+    # --- 2026-08-24 실험 반영 (logs/20260824_fullrun/results.md) ---
+    # 시간축 pooling. 'last'(기존, 마지막 스텝만) / 'mean' / 'meanmax'.
+    # 'last' 는 300 스텝 GRU 에서 학습이 되지 않아 3-class CV 0.650, 'mean' 은 0.711.
+    time_pool: str = "mean"
+
+    # 클래스 경계(초). 길이 1 이면 2-class, 2 면 3-class.
+    # 2-class 는 1.45s 가 최적. 기존 1.27s(=중앙값)는 최빈 구간 한복판이라
+    # 경계 모호 샘플이 33% -> 1.45s 에서 22%. CV acc 0.832 -> 0.899.
+    binary_threshold: float = 1.45
+    ternary_thresholds: List[float] = field(default_factory=lambda: [1.07, 1.53])
+
+    # 회귀(TOTRegressor) 설정
+    regression_log_target: bool = True   # log(TOT) 예측. raw 대비 Spearman 0.607->0.807
+    regression_windows_sec: List[float] = field(default_factory=lambda: [5.0, 3.0])
+    regression_seeds: int = 5            # seed 앙상블 개수
+    use_imu: bool = False                # IMU 추가 시 CV 0.727 -> 0.685 로 악화
+
     # Enhancer options. The model has defaults, but keeping them explicit avoids
     # cfg.TOT attribute errors when running older/newer model variants.
     enh_hid: int = 128

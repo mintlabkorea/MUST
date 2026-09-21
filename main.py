@@ -371,7 +371,6 @@ def evaluate_enhancer_model(model, loader, task_name, device):
     """
     model.eval()
     all_preds, all_trues = [], []
-    all_preds_min = []
 
     for batch in tqdm(loader, desc=f"[Evaluate] Enhancer-{task_name.upper()}"):
         for k, v in batch.items():
@@ -384,15 +383,17 @@ def evaluate_enhancer_model(model, loader, task_name, device):
         if not mask.any(): continue
 
         if task_name == 'act':
-            all_preds.append(preds[mask][:, 0].cpu())
-            all_preds_min.append(preds[mask][:, 1].cpu())
+            # ACT_Baseline 의 regressor 는 3채널을 내보내지만 손실(_act_preds)은 채널 1만
+            # 학습시킨다. 채널 0/2 는 상수 0 근처에 머무는 미학습 출력이므로 쓰지 않는다.
+            # (2026-08-24 확인: ch0 R2=-2.17 pred_std=0.001, ch1 R2=+0.556)
+            all_preds.append(preds[mask][:, 1].cpu())
         else: # 'tot'
             all_preds.append(preds[mask].cpu())
 
         all_trues.append(batch['label'][mask].cpu())
     
-    if not all_trues: 
-        if task_name == 'act': return (0.0, 0.0), (None, None)
+    if not all_trues:
+        if task_name == 'act': return (0.0, 0.0, 0.0), (None, None)
         else: return 0.0, (None, None)
 
     all_preds = torch.cat(all_preds).numpy()
@@ -403,12 +404,11 @@ def evaluate_enhancer_model(model, loader, task_name, device):
         score = accuracy_score(all_trues, predicted_labels)
         return score, (all_trues, predicted_labels) # 점수와 함께 (실제값, 예측값) 반환
     else: # ACT
-        all_preds_min = torch.cat(all_preds_min).numpy()
-        main_mse = mean_squared_error(all_trues, all_preds_min)
-        mean_act_rmse = mean_squared_error(all_trues, all_preds, squared=False)
-        
-        # 실제값은 하나이므로 all_trues를 사용하고, 예측값은 min_act를 사용
-        return (main_mse, mean_act_rmse), (all_trues, all_preds_min)
+        mse = mean_squared_error(all_trues, all_preds)
+        rmse = mse ** 0.5
+        # 평균만 예측했을 때의 RMSE. 이보다 낮아야 실제로 학습된 것.
+        baseline_rmse = float(np.std(all_trues))
+        return (mse, rmse, baseline_rmse), (all_trues, all_preds)
 
 def plot_multiclass_roc(y_true, y_proba, class_names, title, out_path):
     y_true = np.asarray(y_true).astype(int)
@@ -598,8 +598,8 @@ def main(profile="auto", smoke=False):
     act_test_loader = DataLoader(act_test_ds, batch_size=cfg.Data.batch_size, shuffle=False, collate_fn=collate_fn_baseline)
     
     # 평가 함수로부터 성능과 시각화용 데이터를 함께 받음
-    (test_mse_min_act, test_rmse_mean_act), (act_true, act_pred) = evaluate_enhancer_model(enhancer_act, act_test_loader, 'act', device)
-    (main_mse_min_act, mean_act_rmse), (act_true, act_pred) = evaluate_enhancer_model(enhancer_act, act_test_loader, 'act', device)
+    (test_act_mse, test_act_rmse, act_baseline_rmse), (act_true, act_pred) = evaluate_enhancer_model(
+        enhancer_act, act_test_loader, 'act', device)
     if act_true is not None:
         # 전체 + 세그먼트 일괄 저장
         save_act_plots_bulk(
@@ -611,25 +611,25 @@ def main(profile="auto", smoke=False):
             prefix="act"
         )
 
-    # 컨텍스트 평가 직후
-    motion_pt = os.path.join(weights_dir, "best_fusion_v28_assym.pt")  # 네가 가진 pt 경로로 변경 가능
-    
-    if os.path.exists(motion_pt):
-        save_motion_plots_from_pt(
-            motion_pt,
+    # Motion 시각화는 체크포인트가 아니라 테스트셋 예측에서 직접 얻는다.
+    # (기존 코드는 model_state_dict만 든 체크포인트에서 true/pred 키를 찾아 KeyError로 죽었음)
+    try:
+        ctx_preds = context_expert.evaluate(test_loader_emo_mot, return_preds=True)
+        save_motion_plots_bulk(
+            ctx_preds['motion_trues'].numpy(), ctx_preds['motion_preds'].numpy(),
             out_dir=os.path.join(results_dir, "motion_plots"),
             segment_len=2000, stride=2000, dpi=300, prefix="motion"
         )
-    else:
-        print(f"{motion_pt} 가 없어서 스킵했어. (dump_motion_preds_to_pt로 먼저 생성 가능)")
+    except Exception as e:
+        print(f"Motion 플롯 생성 실패: {type(e).__name__}: {e}")
 
     print("\n\n" + "="*30)
     print("      FINAL TEST RESULTS")
     print("="*30)
     print(f"Emotion/Motion -> Motion Acc: {test_acc_mot:.4f}, Valence Acc: {test_acc_v:.4f}, Arousal Acc: {test_acc_a:.4f}")
     print(f"Enhanced TOT   -> TOT Acc: {test_acc_tot:.4f}")
-    print(f"Enhanced ACT   -> min ACT MSE: {test_mse_min_act:.4f}")
-    print(f"Enhanced ACT   -> mean ACT RMSE: {test_rmse_mean_act:.4f}")
+    print(f"Enhanced ACT   -> MSE: {test_act_mse:.4f}, RMSE: {test_act_rmse:.4f} "
+          f"(평균 예측 기준선 RMSE: {act_baseline_rmse:.4f})")
     print("="*30)
     print("\n📊 Evaluation plots saved in 'results' directory.")
 

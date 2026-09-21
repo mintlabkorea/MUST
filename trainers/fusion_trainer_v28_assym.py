@@ -139,7 +139,7 @@ class FusionTrainer(nn.Module, dataProcessor):
 
         mot_cfg = self.cfg.PretrainMotion
         if getattr(mot_cfg, 'modalities_to_use', []):
-            mot_ckpt_path = getattr(mot_cfg, 'ckpt_path', 'weights/best_motion_imu_veh.pt')
+            mot_ckpt_path = getattr(mot_cfg, 'ckpt_path', 'weights/best_motion_veh_sc.pt')
             mot_ckpt = torch.load(mot_ckpt_path, map_location=device)
             mot_enc_states = _get_enc(mot_ckpt)
             mot_map = { 'imu': ('imu', 'imu.', 'p_imu.'), 'veh_m': ('veh_m', 'veh.', 'p_veh_m.'), 'sc': ('sc', 'sc.', 'p_sc.') }
@@ -400,25 +400,14 @@ class FusionTrainer(nn.Module, dataProcessor):
                 loss_mot_from_emo = torch.tensor(0., device=device)
 
                 if out_emo and 'valence_logits' in out_emo:
-                    # ========================= [핵심 수정 부분 START] =========================
-                    # 모델은 시퀀스당 하나의 값을 예측하므로, 라벨도 시퀀스에서 하나의 값만 선택합니다.
-                    # 여기서는 라벨 시퀀스의 마지막 값([-1])을 사용합니다.
-                    val_logits = out_emo['valence_logits']
-                    raw_v = emotion_batch['valence_reg_emotion'].to(device)[:, -1] # .view(-1) 대신 [:, -1] 사용
-
-                    # Arousal도 동일하게 수정합니다.
-                    aro_logits = out_emo['arousal_logits']
-                    raw_a = emotion_batch['arousal_reg_emotion'].to(device)[:, -1] # .view(-1) 대신 [:, -1] 사용
-                    # ========================== [핵심 수정 부분 END] ==========================
-
                     # 감정 손실 계산
-                    mask_v = (raw_v >= 1) & (raw_v < 10)
-                    tgt_v = torch.full_like(raw_v, -100, dtype=torch.long)
+                    val_logits, raw_v = out_emo['valence_logits'], emotion_batch['valence_reg_emotion'].to(device).view(-1)
+                    mask_v = (raw_v >= 1) & (raw_v < 10); tgt_v = torch.full_like(raw_v, -100, dtype=torch.long)
                     if mask_v.any(): tgt_v[mask_v] = raw_v[mask_v].long() - 1
                     loss_v = F.cross_entropy(val_logits, tgt_v, ignore_index=-100)
 
-                    mask_a = (raw_a >= 1) & (raw_a < 10)
-                    tgt_a = torch.full_like(raw_a, -100, dtype=torch.long)
+                    aro_logits, raw_a = out_emo['arousal_logits'], emotion_batch['arousal_reg_emotion'].to(device).view(-1)
+                    mask_a = (raw_a >= 1) & (raw_a < 10); tgt_a = torch.full_like(raw_a, -100, dtype=torch.long)
                     if mask_a.any(): tgt_a[mask_a] = raw_a[mask_a].long() - 1
                     loss_a = F.cross_entropy(aro_logits, tgt_a, ignore_index=-100)
                     
@@ -430,10 +419,12 @@ class FusionTrainer(nn.Module, dataProcessor):
                     valid_mask_emo_mot = (mot_labels_from_emo.reshape(-1) > 0) & (mot_labels_from_emo.reshape(-1) != 4)
                     if valid_mask_emo_mot.any():
                         loss_mot_from_emo = F.cross_entropy(mot_logits_from_emo.reshape(-1, mot_logits_from_emo.shape[-1])[valid_mask_emo_mot], (mot_labels_from_emo.reshape(-1)[valid_mask_emo_mot] - 1).long())
-            
-            # 감정 배치에서 발생한 모든 손실을 합산
-            total_emo_loss = loss_emo_group + loss_mot_from_emo
+                
+                # 감정 배치에서 발생한 모든 손실을 합산
+                total_emo_loss = loss_emo_group + loss_mot_from_emo
+
             if train and total_emo_loss.requires_grad:
+                # [핵심 수정] 감정 관련 손실에 대해 즉시 역전파 및 업데이트
                 self.optim.zero_grad()
                 self.scaler.scale(total_emo_loss).backward()
                 self.scaler.unscale_(self.optim)
@@ -446,7 +437,6 @@ class FusionTrainer(nn.Module, dataProcessor):
             num_batches += 1
         
         return total_loss / (num_batches * 2) if num_batches > 0 else 0.0 # 스텝이 2번이므로 *2
-    
     def run_epoch_for_validation(self, loader):
         self.eval()
         total_loss, num_batches = 0.0, 0
@@ -455,27 +445,9 @@ class FusionTrainer(nn.Module, dataProcessor):
             with torch.no_grad():
                 out = self.forward(batch, task_type='emotion') # 검증은 항상 풀-퓨전 모드
                 if not out: continue
-
-                # ========================= [핵심 수정 부분 START] =========================
-                # 예상치 못한 라벨 값에 의한 CUDA 오류를 방지하기 위해 안전한 라벨 처리 로직으로 변경
                 
-                # Valence 처리
-                raw_v = batch['valence_reg_emotion'].to(device)[:, -1]
-                mask_v = (raw_v >= 1) & (raw_v < 10)
-                valence_target = torch.full_like(raw_v, -100, dtype=torch.long) # 기본값을 ignore_index로 설정
-                valence_target[mask_v] = raw_v[mask_v].long() - 1 # 유효한 라벨만 0~8로 변환
-                
-                loss_v = F.cross_entropy(out['valence_logits'], valence_target, ignore_index=-100)
-
-                # Arousal 처리
-                raw_a = batch['arousal_reg_emotion'].to(device)[:, -1]
-                mask_a = (raw_a >= 1) & (raw_a < 10)
-                arousal_target = torch.full_like(raw_a, -100, dtype=torch.long) # 기본값을 ignore_index로 설정
-                arousal_target[mask_a] = raw_a[mask_a].long() - 1 # 유효한 라벨만 0~8로 변환
-
-                loss_a = F.cross_entropy(out['arousal_logits'], arousal_target, ignore_index=-100)
-                # ========================== [핵심 수정 부분 END] ==========================
-
+                loss_v = F.cross_entropy(out['valence_logits'], (batch['valence_reg_emotion'].to(device).view(-1) - 1).long(), ignore_index=-101)
+                loss_a = F.cross_entropy(out['arousal_logits'], (batch['arousal_reg_emotion'].to(device).view(-1) - 1).long(), ignore_index=-101)
                 loss_align = F.mse_loss(self.alignment_head(out['fused_motion']), out['fused_emotion'])
                 loss_emo_group = (loss_v + loss_a) * self.cfg.MainTask.lambda_emotion + loss_align * self.cfg.MainTask.cross_modal_lambda
 
@@ -499,23 +471,18 @@ class FusionTrainer(nn.Module, dataProcessor):
             mask_mot = (t_mot_raw > 0) & (t_mot_raw != 4)
             all_preds['motion_preds'].append(p_mot[mask_mot]); all_preds['motion_trues'].append(t_mot_raw[mask_mot] - 1)
             
-            # ========================= [Valence 핵심 수정 부분 START] =========================
-            # 모델 예측 (크기: B)
+            # Valence
             p_v_multiclass = out['valence_logits'].argmax(-1).cpu()
-
-            # 정답 라벨도 시퀀스 전체(.view(-1))가 아닌 마지막 값([:, -1])만 사용 (크기: B)
-            raw_v = batch['valence_reg_emotion'][:, -1].cpu() 
-            
+            raw_v = batch['valence_reg_emotion'].view(-1).cpu()
             mask_v = (raw_v >= 1) & (raw_v < 10)
             t_v_multiclass = torch.full_like(raw_v, -1, dtype=torch.long)
-            if mask_v.any():
-                t_v_multiclass[mask_v] = raw_v[mask_v].long() - 1
+            t_v_multiclass[mask_v] = raw_v[mask_v].long() - 1
 
-            # 3진으로 변환하여 평가 (이제 모든 텐서의 크기가 B로 동일)
+            # 3진으로 변환하여 평가
             p_v_ternary = torch.full_like(p_v_multiclass, -1)
-            p_v_ternary[(p_v_multiclass >= 0) & (p_v_multiclass <= 2)] = 0
-            p_v_ternary[(p_v_multiclass >= 3) & (p_v_multiclass <= 5)] = 1
-            p_v_ternary[(p_v_multiclass >= 6) & (p_v_multiclass <= 8)] = 2
+            p_v_ternary[(p_v_multiclass >= 0) & (p_v_multiclass <= 2)] = 0  # Low: 1,2,3점
+            p_v_ternary[(p_v_multiclass >= 3) & (p_v_multiclass <= 5)] = 1  # Medium: 4,5,6점
+            p_v_ternary[(p_v_multiclass >= 6) & (p_v_multiclass <= 8)] = 2  # High: 7,8,9점
             
             t_v_ternary = torch.full_like(t_v_multiclass, -1)
             t_v_ternary[(t_v_multiclass >= 0) & (t_v_multiclass <= 2)] = 0
@@ -525,22 +492,15 @@ class FusionTrainer(nn.Module, dataProcessor):
             valid_mask_v = t_v_ternary != -1
             all_preds['valence_preds'].append(p_v_ternary[valid_mask_v])
             all_preds['valence_trues'].append(t_v_ternary[valid_mask_v])
-            # ========================== [Valence 핵심 수정 부분 END] ==========================
 
-
-            # ========================= [Arousal 핵심 수정 부분 START] =========================
-            # 모델 예측 (크기: B)
+            # Arousal
             p_a_multiclass = out['arousal_logits'].argmax(-1).cpu()
-
-            # 정답 라벨도 시퀀스 전체(.view(-1))가 아닌 마지막 값([:, -1])만 사용 (크기: B)
-            raw_a = batch['arousal_reg_emotion'][:, -1].cpu()
-
+            raw_a = batch['arousal_reg_emotion'].view(-1).cpu()
             mask_a = (raw_a >= 1) & (raw_a < 10)
             t_a_multiclass = torch.full_like(raw_a, -1, dtype=torch.long)
-            if mask_a.any():
-                t_a_multiclass[mask_a] = raw_a[mask_a].long() - 1
+            t_a_multiclass[mask_a] = raw_a[mask_a].long() - 1
 
-            # 3진으로 변환하여 평가 (이제 모든 텐서의 크기가 B로 동일)
+            # 3진으로 변환하여 평가
             p_a_ternary = torch.full_like(p_a_multiclass, -1)
             p_a_ternary[(p_a_multiclass >= 0) & (p_a_multiclass <= 2)] = 0
             p_a_ternary[(p_a_multiclass >= 3) & (p_a_multiclass <= 5)] = 1
@@ -554,19 +514,13 @@ class FusionTrainer(nn.Module, dataProcessor):
             valid_mask_a = t_a_ternary != -1
             all_preds['arousal_preds'].append(p_a_ternary[valid_mask_a])
             all_preds['arousal_trues'].append(t_a_ternary[valid_mask_a])
-            # ========================== [Arousal 핵심 수정 부분 END] ==========================
             
-        for key in all_preds: 
-            if all_preds[key]: # 리스트가 비어있지 않은 경우에만 cat 수행
-                all_preds[key] = torch.cat(all_preds[key])
-                
+        for key in all_preds: all_preds[key] = torch.cat(all_preds[key])
         if return_preds: return all_preds
         
-        # 리스트가 비어있을 경우를 대비한 안전장치
-        acc_mot = accuracy_score(all_preds['motion_trues'], all_preds['motion_preds']) if len(all_preds['motion_trues']) > 0 else 0.0
-        acc_v = accuracy_score(all_preds['valence_trues'], all_preds['valence_preds']) if len(all_preds['valence_trues']) > 0 else 0.0
-        acc_a = accuracy_score(all_preds['arousal_trues'], all_preds['arousal_preds']) if len(all_preds['arousal_trues']) > 0 else 0.0
-        
+        acc_mot = accuracy_score(all_preds['motion_trues'], all_preds['motion_preds'])
+        acc_v = accuracy_score(all_preds['valence_trues'], all_preds['valence_preds'])
+        acc_a = accuracy_score(all_preds['arousal_trues'], all_preds['arousal_preds'])
         return acc_mot, acc_v, acc_a
             
     # 2단계 학습을 총괄하는 메인 훈련 함수
@@ -579,7 +533,7 @@ class FusionTrainer(nn.Module, dataProcessor):
         total_epochs = self.cfg.MainTask.epochs
         
         # 어떤 지표를 기준으로 최고 모델을 저장할지 설정 ('accuracy' 또는 'loss')
-        metric_to_monitor = 'loss'
+        metric_to_monitor = 'accuracy'
         
         # 선택된 지표에 따라 best_score 초기값을 설정합니다.
         if metric_to_monitor == 'loss':

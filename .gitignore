@@ -17,6 +17,7 @@ physionet.org/
 weights/
 results/
 debug/
+archive/
 
 # Large binary artifacts
 *.pt
@@ -41,3 +42,7 @@ motion_tuning_results.csv
 hyperparameter_tuning_results.csv
 result_comparison
 Untitled Document 1
+
+# Local delivery packages and experiment records
+deliverables/
+logs/
