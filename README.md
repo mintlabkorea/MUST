@@ -9,7 +9,11 @@ loader schema.
 
 ## Shared source snapshot (2026-09-20)
 
-The executable source matches the shared `MUST_source_20260920.zip` package.
+The active implementation is based on the shared September 2026 source.
+As of October 1, only the final fusion trainer is distributed:
+[`trainers/fusion_trainer_v28_assym.py`](trainers/fusion_trainer_v28_assym.py),
+which is the implementation imported by `main.py`. Historical fusion trainers
+and unused alternative fusion implementations have been removed.
 See [delivery notes (Korean)](DELIVERY_NOTES_KO.md).
 
 Known limitations of this snapshot:
@@ -25,10 +29,6 @@ Known limitations of this snapshot:
   have not been ported into this implementation.
 - The sample smoke check validates data loading and batch shapes only. It does
   not validate full training, model inference, or reported performance.
-
-The August change record describes the historical local working tree. Its
-references to a pending pull, local logs, and archive files are historical;
-those files are not included here.
 
 ## Quick Start
 

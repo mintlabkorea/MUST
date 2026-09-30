@@ -46,3 +46,8 @@ Untitled Document 1
 # Local delivery packages and experiment records
 deliverables/
 logs/
+
+# Publish only the final fusion trainer used by main.py
+/trainers/old_fusion/
+/trainers/fusion_trainer*.py
+!/trainers/fusion_trainer_v28_assym.py
